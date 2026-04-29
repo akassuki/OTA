@@ -1,25 +1,21 @@
 #include <Arduino.h>
 #include <LoRa_E32.h>
 
-/* ================= CONFIG ================= */
-
-#define LORA_RX_PIN   25
-#define LORA_TX_PIN   34
-
-#define LORA_BAUD     9600
-#define LINUX_BAUD    115200
-
-#define LORA_CH       20
-
-#define GATE_ADDH     0x00
-#define GATE_ADDL     0x01
+#define GW_ADDH       0x00
+#define GW_ADDL       0x01
 
 #define NODE_ADDH     0x00
 #define NODE_ADDL     0x00
 
-#define BUF_SIZE      256
+#define LORA_CH       20
 
-/* ================= LORA ================= */
+#define LORA_TX_PIN   34
+#define LORA_RX_PIN   25
+
+#define USB_BAUD      115200
+#define LORA_BAUD     9600
+
+#define BUF_SIZE      256
 
 HardwareSerial loraSerial(1);
 
@@ -30,11 +26,9 @@ LoRa_E32 e32(
     UART_BPS_RATE_9600
 );
 
-/* ================= SETUP ================= */
+void setup() {
 
-void setup()
-{
-    Serial.begin(LINUX_BAUD);
+    Serial.begin(USB_BAUD);
 
     loraSerial.begin(
         LORA_BAUD,
@@ -43,65 +37,56 @@ void setup()
         LORA_TX_PIN
     );
 
-    delay(500);
+    delay(1000);
 
     e32.begin();
-
-    /* ===== CONFIG FIXED MODE ===== */
 
     ResponseStructContainer csc =
         e32.getConfiguration();
 
-    if (csc.status.code == SUCCESS)
-    {
-        Configuration cfg =
-            *(Configuration*)csc.data;
+    if (csc.status.code == SUCCESS) {
 
-        cfg.ADDH = GATE_ADDH;
-        cfg.ADDL = GATE_ADDL;
-        cfg.CHAN = LORA_CH;
+        Configuration config =
+            *(Configuration*) csc.data;
 
-        cfg.OPTION.fixedTransmission =
+        config.ADDH = GW_ADDH;
+        config.ADDL = GW_ADDL;
+        config.CHAN = LORA_CH;
+
+        config.OPTION.fixedTransmission =
             FT_FIXED_TRANSMISSION;
 
         e32.setConfiguration(
-            cfg,
+            config,
             WRITE_CFG_PWR_DWN_SAVE
         );
     }
 
     csc.close();
-
-    delay(500);
 }
 
-/* ================= LOOP ================= */
+void loop() {
 
-void loop()
-{
-    /* =====================================
-     * UART -> LORA
-     * ===================================== */
+    /* =========================
+       Linux -> Node
+    ========================= */
 
-    if (Serial.available())
-    {
+    while (Serial.available()) {
+
         uint8_t buf[BUF_SIZE];
-
         size_t len = 0;
 
-        delay(2);
+        delay(5);
 
-        while (
-            Serial.available() &&
-            len < BUF_SIZE
-        )
-        {
+        while (Serial.available() &&
+               len < BUF_SIZE) {
+
             buf[len++] =
                 (uint8_t)Serial.read();
         }
 
-        if (len > 0)
-        {
+        if (len > 0) {
+
             e32.sendFixedMessage(
                 NODE_ADDH,
                 NODE_ADDL,
@@ -112,20 +97,22 @@ void loop()
         }
     }
 
-    /* =====================================
-     * LORA -> UART
-     * ===================================== */
+    /* =========================
+       Node -> Linux
+    ========================= */
 
-    if (e32.available() > 1)
-    {
+    if (e32.available() > 0) {
+
         ResponseContainer rc =
             e32.receiveMessage();
 
-        if (rc.status.code == SUCCESS)
-        {
+        if (rc.status.code == SUCCESS) {
+
+            String msg = rc.data;
+
             Serial.write(
-                (uint8_t*)rc.data.c_str(),
-                rc.data.length()
+                (const uint8_t*)msg.c_str(),
+                msg.length()
             );
 
             Serial.flush();
