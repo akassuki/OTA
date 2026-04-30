@@ -1,142 +1,96 @@
 #include <Arduino.h>
-#include <LoRa_E32.h>
+#include "LoRa_E32.h"
 
-/* ========= CONFIG ========= */
+/* ================== LORA CONFIG ================== */
+#define LORA_TX_PIN   34
+#define LORA_RX_PIN   25
+#define LORA_BAUD     9600
 
 #define NODE_ADDH     0x00
-#define NODE_ADDL     0x00
-
+#define NODE_ADDL     0x01   // node nhận
 #define GW_ADDH       0x00
-#define GW_ADDL       0x01
+#define GW_ADDL       0x00
 
 #define LORA_CH       20
 
-#define LORA_TX_PIN   34
-#define LORA_RX_PIN   25
-
-#define LORA_BAUD     9600
-
-/* ========= LORA ========= */
-
 HardwareSerial loraSerial(1);
-LoRa_E32 e32(LORA_TX_PIN, LORA_RX_PIN,
-             &loraSerial,
-             UART_BPS_RATE_9600);
+LoRa_E32 e32(LORA_TX_PIN, LORA_RX_PIN, &loraSerial, UART_BPS_RATE_9600);
 
-String lineBuf = "";
+/* ================== PAYLOAD STRUCT ================== */
+#define CHUNK_SIZE 52
 
-void sendToGateway(const char* msg) {
+typedef struct __attribute__((packed)) {
+    uint16_t index;
+    uint8_t len;
+    uint8_t data[CHUNK_SIZE];
+} Chunk;
 
-    char out[128];
-
-    snprintf(
-        out,
-        sizeof(out),
-        "%s\n",
-        msg
-    );
-
-    Serial.print("[TX] ");
-    Serial.print(out);
-
-    ResponseStatus rs =
-        e32.sendFixedMessage(
-            GW_ADDH,
-            GW_ADDL,
-            LORA_CH,
-            out,
-            strlen(out)
-        );
-
-    if (rs.code != SUCCESS) {
-
-        Serial.println("[ERROR] SEND FAIL");
-    }
-}
-
+/* ================== SETUP ================== */
 void setup() {
-
     Serial.begin(115200);
-
-    loraSerial.begin(
-        LORA_BAUD,
-        SERIAL_8N1,
-        LORA_RX_PIN,
-        LORA_TX_PIN
-    );
-
     delay(500);
+
+    loraSerial.begin(LORA_BAUD, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN);
 
     e32.begin();
 
-    /* ===== Fixed Mode ===== */
-
-    ResponseStructContainer csc =
-        e32.getConfiguration();
-
+    ResponseStructContainer csc = e32.getConfiguration();
     if (csc.status.code == SUCCESS) {
 
-        Configuration config =
-            *(Configuration*) csc.data;
+        Configuration config = *(Configuration*) csc.data;
 
         config.ADDH = NODE_ADDH;
         config.ADDL = NODE_ADDL;
-        config.CHAN = LORA_CH;
+        config.CHAN  = LORA_CH;
 
-        config.OPTION.fixedTransmission =
-            FT_FIXED_TRANSMISSION;
+        config.OPTION.fixedTransmission = FT_FIXED_TRANSMISSION;
 
-        e32.setConfiguration(
-            config,
-            WRITE_CFG_PWR_DWN_SAVE
-        );
+        e32.setConfiguration(config, WRITE_CFG_PWR_DWN_SAVE);
+        Serial.println("[LoRa] Config OK");
     }
 
     csc.close();
 
-    Serial.println("NODE READY");
+    Serial.println("[LoRa RX Node] Ready...");
 }
 
+/* ================== LOOP ================== */
 void loop() {
 
     if (e32.available() > 1) {
 
-        ResponseContainer rc =
-            e32.receiveMessage();
+        ResponseStructContainer rsc = e32.receiveMessage(sizeof(Chunk));
 
-        if (rc.status.code == SUCCESS) {
+        if (rsc.status.code == SUCCESS) {
 
-            String msg = String(rc.data);
+            Chunk pkt = *(Chunk*) rsc.data;
 
-            Serial.print("[RX] ");
-            Serial.println(msg);
+            Serial.println("================================");
 
-            /* ==========================
-               TEST PROTOCOL
-               ========================== */
+            Serial.print("[RX] Index : ");
+            Serial.println(pkt.index);
 
-            if (msg.startsWith("START:")) {
+            Serial.print("[RX] Len   : ");
+            Serial.println(pkt.len);
 
-                sendToGateway("READY");
+            Serial.print("[RX] Data  : ");
+
+            for (int i = 0; i < pkt.len; i++) {
+                if (pkt.data[i] < 16) Serial.print("0");
+                Serial.print(pkt.data[i], HEX);
+                Serial.print(" ");
             }
 
-            else if (msg.startsWith("CHUNK:")) {
+            Serial.println();
 
-                static int idx = 0;
-
-                char reply[32];
-
-                sprintf(reply, "OK:%d", idx++);
-
-                sendToGateway(reply);
-            }
-
-            else if (msg.startsWith("END:")) {
-
-                sendToGateway("DONE");
-            }
+            Serial.println("================================");
         }
+        else {
+            Serial.println("[LoRa] Receive FAIL");
+        }
+
+        rsc.close();
     }
 
-    delay(1);
+    delay(10);
 }
