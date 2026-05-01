@@ -5,10 +5,10 @@
 #define RB_SIZE 100
 
 #define NODE_ADDH     0x00
-#define NODE_ADDL     0x00
+#define NODE_ADDL     0x01
 
 #define GW_ADDH       0x00
-#define GW_ADDL       0x01
+#define GW_ADDL       0x00
 
 #define LORA_CH       20
 
