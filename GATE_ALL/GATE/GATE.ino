@@ -31,7 +31,7 @@ typedef struct __attribute__((packed)) {
     uint32_t crc32;
 } PktStart;
 
-typedef struct {
+typedef struct __attribute__((packed)) {
     uint16_t index;
     uint8_t  len;
     uint8_t  data[CHUNK_SIZE];
@@ -249,13 +249,7 @@ void LoRaTask(void *pvParameters) {
             // TẠO PACKET GỬI LORA
             // =========================
 
-            // fixed packet gửi qua E32
-            struct {
-                uint16_t index;
-                uint8_t len;
-                uint8_t data[CHUNK_SIZE];
-            } payload;
-
+            Chunk payload;
             payload.index = c.index;
             payload.len   = c.len;
             memcpy(payload.data, c.data, c.len);
