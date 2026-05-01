@@ -45,21 +45,28 @@ void loop() {
             Chunk* pkt = (Chunk*) rsc.data;
 
             Serial.println("================================");
-            Serial.print("[RX] Index : ");
-            Serial.println(pkt->index);
-            Serial.print("[RX] Len   : ");
-            Serial.println(pkt->len);
+            Serial.print("[RX] Index : "); Serial.println(pkt->index);
+            Serial.print("[RX] Len   : "); Serial.println(pkt->len);
             Serial.print("[RX] Data  : ");
-            for (int i = 0; i < pkt->len && i < CHUNK_SIZE; i++) {
+            for (int i = 0; i < pkt->len; i++) {
                 if (pkt->data[i] < 16) Serial.print("0");
                 Serial.print(pkt->data[i], HEX);
                 Serial.print(" ");
             }
             Serial.println();
+
+            // ✅ Thêm: in raw toàn bộ sizeof(Chunk) bytes
+            Serial.print("[RAW] ");
+            uint8_t* raw = (uint8_t*) rsc.data;
+            for (int i = 0; i < (int)sizeof(Chunk); i++) {
+                if (raw[i] < 16) Serial.print("0");
+                Serial.print(raw[i], HEX);
+                Serial.print(" ");
+            }
+            Serial.println();
             Serial.println("================================");
         } else {
-            Serial.print("[LoRa] FAIL code=");
-            Serial.println(rsc.status.code);
+            Serial.print("[FAIL] code="); Serial.println(rsc.status.code);
         }
         rsc.close();
     }

@@ -250,6 +250,7 @@ void LoRaTask(void *pvParameters) {
             // =========================
 
             Chunk payload;
+            memset(&payload, 0, sizeof(Chunk));
             payload.index = c.index;
             payload.len   = c.len;
             memcpy(payload.data, c.data, c.len);
