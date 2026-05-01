@@ -17,6 +17,9 @@
 
 #define LORA_BAUD     9600
 
+#define RB_HIGH_WATERMARK  80   
+#define RB_LOW_WATERMARK   20   
+
 HardwareSerial loraSerial(1);
 LoRa_E32 e32(LORA_TX_PIN, LORA_RX_PIN, &loraSerial, UART_BPS_RATE_9600);
 
@@ -39,6 +42,13 @@ Chunk ring[RB_SIZE];
 
 volatile int head = 0;
 volatile int tail = 0;
+SemaphoreHandle_t rbMutex;
+SemaphoreHandle_t dataReady;
+
+int rbCount() {
+    return (head - tail + RB_SIZE) % RB_SIZE;
+}
+
 
 bool isFull() {
     return ((head + 1) % RB_SIZE) == tail;
@@ -49,37 +59,41 @@ bool isEmpty() {
 }
 
 bool pushChunk(uint16_t idx, uint8_t len, uint8_t* data) {
-    // Nếu bộ đệm đầy, không thêm dữ liệu mới cho đến khi có không gian trống
+    if (xSemaphoreTake(rbMutex, portMAX_DELAY) != pdTRUE) return false;
+    
     if (isFull()) {
-        return false; // Trả về false nếu không có không gian
+        xSemaphoreGive(rbMutex);
+        return false;
     }
 
-    // Thêm phần tử mới vào vị trí head
     ring[head].index = idx;
-    ring[head].len = len;
+    ring[head].len   = len;
     memcpy(ring[head].data, data, len);
-
-    // Cập nhật head tới vị trí tiếp theo
     head = (head + 1) % RB_SIZE;
-    
-    return true; // Thành công
+    int count = rbCount(); 
+
+    xSemaphoreGive(rbMutex);
+    xSemaphoreGive(dataReady);
+    if (count >= RB_HIGH_WATERMARK) {
+        linuxSend("WAIT");
+    }
+    return true;
 }
 
-// Hàm lấy chunk ra khỏi buffer
 bool popChunk(Chunk &out) {
-    // Kiểm tra nếu buffer trống
-    if (isEmpty()) return false;
+    if (xSemaphoreTake(rbMutex, portMAX_DELAY) != pdTRUE) return false;
+    
+    if (isEmpty()) {
+        xSemaphoreGive(rbMutex);
+        return false;
+    }
 
-    // Lấy phần tử tại vị trí tail ra
     out = ring[tail];
-
-    // "Xóa" phần tử tại vị trí tail bằng cách reset dữ liệu
     memset(&ring[tail], 0, sizeof(Chunk));
-
-    // Cập nhật tail tới phần tử tiếp theo
     tail = (tail + 1) % RB_SIZE;
 
-    return true; // Thành công
+    xSemaphoreGive(rbMutex);
+    return true;
 }
 
 /* ================== UART RESPONSE ================== */
@@ -150,6 +164,9 @@ void handleChunk(String& header) {
     while (received < len && millis() - t < 5000) {
         if (Serial.available()) {
             buf[received++] = (uint8_t)Serial.read();
+        }
+        else {
+            vTaskDelay(1 / portTICK_PERIOD_MS);
         }
     }
 
@@ -224,6 +241,7 @@ void LoRaTask(void *pvParameters) {
     Chunk c;
 
     while (1) {
+        xSemaphoreTake(dataReady, portMAX_DELAY); 
 
         if (popChunk(c)) {
 
@@ -253,6 +271,10 @@ void LoRaTask(void *pvParameters) {
                 sizeof(payload)
             );
 
+            if (rbCount() <= RB_LOW_WATERMARK) {
+                linuxSend("RESUME");
+            }
+
             // =========================
             // DEBUG (KHÔNG DÙNG SERIAL CHO PROTOCOL)
             // =========================
@@ -265,13 +287,19 @@ void LoRaTask(void *pvParameters) {
             // }
         }
 
-        vTaskDelay(5 / portTICK_PERIOD_MS);
+        //vTaskDelay(5 / portTICK_PERIOD_MS);
+        vTaskDelay(10 / portTICK_PERIOD_MS); 
     }
 }
 
 /* ================== SETUP ================== */
 void setup() {
     Serial.begin(115200);
+    delay(500);
+    Serial.flush();
+    linuxSend("BOOT_OK"); 
+    rbMutex = xSemaphoreCreateMutex();
+    dataReady = xSemaphoreCreateCounting(RB_SIZE, 0);
     loraSerial.begin(LORA_BAUD,SERIAL_8N1,LORA_RX_PIN,LORA_TX_PIN);
     delay(500);
     e32.begin();
@@ -290,6 +318,7 @@ void setup() {
     }
 
     csc.close();
+
 
     xTaskCreate(UartTask, "UART Task", 4096, NULL, 1, NULL);
     xTaskCreate(LoRaTask, "LoRa Task", 4096, NULL, 1, NULL);

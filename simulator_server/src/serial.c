@@ -10,6 +10,8 @@
 #include <termios.h>
 #include <sys/select.h>
 #include <logger.h>
+#include <sys/ioctl.h>
+
 
 static speed_t baud_to_speed(int baud) {
     switch (baud) {
@@ -22,6 +24,18 @@ static speed_t baud_to_speed(int baud) {
             fprintf(stderr, "Baud not supported: %d, using 115200\n", baud);
             return B115200;
     }
+}
+
+void serial_reset_esp32(int fd) {
+    // Kéo DTR xuống → ESP32 reset
+    int dtr = TIOCM_DTR;
+    ioctl(fd, TIOCMBIC, &dtr);  // DTR = 0 → EN = LOW → reset
+    usleep(200000);              // Giữ 200ms
+    ioctl(fd, TIOCMBIS, &dtr);  // DTR = 1 → EN = HIGH → boot
+}
+
+void serial_flush_input(int fd) {
+    tcflush(fd, TCIFLUSH);
 }
 
 int serial_open(const char* port, int baud) {

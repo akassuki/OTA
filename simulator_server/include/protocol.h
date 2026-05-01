@@ -17,6 +17,7 @@ static inline uint32_t crc32_chunk(const uint8_t* data, size_t len) {
     return ~crc;
 }
 
+
 int proto_send_start(int fd,
                      size_t   file_size,
                      uint16_t total_chunks,

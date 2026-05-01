@@ -102,9 +102,51 @@ int main(int argc, char* argv[]) {
     int fd = serial_open(port, baud);
     if (fd < 0) { file_free(file_data); return 1; }
 
+    serial_reset_esp32(fd);  
     // Chờ ESP32 boot xong
     log_terminal("waiting for ESP32...\n");
-    sleep(2);
+    // sleep(2);
+
+    char boot_buf[64];
+    memset(boot_buf, 0, sizeof(boot_buf));
+    int  boot_pos = 0;
+    int  found    = 0;
+
+    struct timespec t_start, t_now;
+    clock_gettime(CLOCK_MONOTONIC, &t_start);
+
+    while (!found) {
+        clock_gettime(CLOCK_MONOTONIC, &t_now);
+        double elapsed = (t_now.tv_sec - t_start.tv_sec) +
+                        (t_now.tv_nsec - t_start.tv_nsec) / 1e9;
+        if (elapsed > 10.0) {
+            log_terminal("[ERROR] ESP32 not responding\n");
+            serial_close(fd);
+            file_free(file_data);
+            return 1;
+        }
+
+        char c;
+        if (read(fd, &c, 1) <= 0) continue;
+
+        if (c == '\n' || c == '\r') {
+            boot_buf[boot_pos] = '\0';
+
+            // Trim ký tự rác ở đầu — tìm "BOOT_OK" trong chuỗi
+            if (strstr(boot_buf, "BOOT_OK")) {
+                log_terminal("   [BOOT] ESP32 ready\n");
+                found = 1;
+            }
+
+            boot_pos = 0;
+            memset(boot_buf, 0, sizeof(boot_buf));
+        } else {
+            if (boot_pos < (int)sizeof(boot_buf) - 1)
+                boot_buf[boot_pos++] = c;
+        }
+    }
+
+    serial_flush_input(fd);
 
     struct timespec ts_start, ts_now;
     clock_gettime(CLOCK_MONOTONIC, &ts_start);

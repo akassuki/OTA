@@ -120,8 +120,9 @@ void handleEnd(String& line) {
 /* ======= SETUP ======= */
 void setup() {
     Serial.begin(115200);
-    delay(100);
+    delay(500);
     Serial.flush();
+    linuxSend("BOOT_OK"); 
 }
 
 /* ======= LOOP ======= */
