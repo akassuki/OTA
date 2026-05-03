@@ -28,6 +28,8 @@ volatile uint8_t  lastAckStatus = 0;
 volatile uint16_t lastAckIndex  = 0xFFFF;
 volatile bool     ackReceived   = false;
 SemaphoreHandle_t ackSem;   // tạo trong setup()
+SemaphoreHandle_t e32Mutex; 
+
 
 HardwareSerial loraSerial(1);
 LoRa_E32 e32(LORA_TX_PIN, LORA_RX_PIN, &loraSerial, UART_BPS_RATE_9600);
@@ -303,16 +305,20 @@ void UartTask(void *pvParameters) {
 
 void AckRxTask(void* pv) {
     while (true) {
-        if (e32.available() >= (int)sizeof(AckPkt)) {
-            ResponseStructContainer rsc = e32.receiveMessage(sizeof(AckPkt));
-            if (rsc.status.code == SUCCESS) {
-                AckPkt* ack = (AckPkt*) rsc.data;
-                lastAckStatus = ack->status;
-                lastAckIndex  = ack->index;
-                ackReceived   = true;
-                xSemaphoreGive(ackSem);   // báo cho LoRaTask
+        if (xSemaphoreTake(e32Mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+            if (e32.available() >= (int)sizeof(AckPkt)) {
+                ResponseStructContainer rsc = e32.receiveMessage(sizeof(AckPkt));
+                if (rsc.status.code == SUCCESS) {
+                    AckPkt* ack = (AckPkt*) rsc.data;
+                    lastAckStatus = ack->status;
+                    lastAckIndex  = ack->index;
+                    ackReceived   = true;
+                    xSemaphoreGive(ackSem);
+                    linuxSendf("DBG:ACK_RECV status=%02X idx=%u", ack->status, ack->index);
+                }
+                rsc.close();
             }
-            rsc.close();
+            xSemaphoreGive(e32Mutex);
         }
         vTaskDelay(pdMS_TO_TICKS(5));
     }
@@ -321,7 +327,7 @@ void AckRxTask(void* pv) {
 // ── LoRaTask — chỉ gửi, chờ semaphore từ AckRxTask ──────────
 void LoRaTask(void* pvParameters) {
     Chunk c;
-    const uint32_t ACK_TIMEOUT_MS = 2000;
+    const uint32_t ACK_TIMEOUT_MS = 5000;
     const int      MAX_RETRY      = 3;
 
     while (true) {
@@ -337,14 +343,26 @@ void LoRaTask(void* pvParameters) {
             xSemaphoreTake(ackSem, 0);   // drain semaphore
 
             // Gửi chunk
-            ResponseStatus rs = e32.sendFixedMessage(
-                GW_ADDH, GW_ADDL, LORA_CH, &c, sizeof(c));
+            ResponseStatus rs;
+            if (xSemaphoreTake(e32Mutex, pdMS_TO_TICKS(3000)) == pdTRUE) {
+                rs = e32.sendFixedMessage(
+                    GW_ADDH, GW_ADDL, LORA_CH, &c, sizeof(c));
+
+                // QUAN TRỌNG: chờ RF truyền xong hoàn toàn trước khi nhả mutex
+                // để AckRxTask không cố nhận trong lúc E32 vẫn đang TX
+
+                xSemaphoreGive(e32Mutex);
+            } else {
+                linuxSendf("WARN:E32_BUSY idx=%u attempt=%d", c.index, attempt);
+                continue;
+            }
 
             if (rs.code != SUCCESS) {
                 linuxSendf("WARN:TX_FAIL idx=%u attempt=%d", c.index, attempt);
                 vTaskDelay(pdMS_TO_TICKS(200));
                 continue;
             }
+            vTaskDelay(pdMS_TO_TICKS(200));
 
             // Chờ ACK từ AckRxTask qua semaphore
             if (xSemaphoreTake(ackSem, pdMS_TO_TICKS(ACK_TIMEOUT_MS)) == pdTRUE) {
@@ -400,6 +418,7 @@ void setup() {
     csc.close();
 
     ackSem = xSemaphoreCreateBinary();
+    e32Mutex = xSemaphoreCreateMutex();
     xTaskCreate(AckRxTask, "AckRx", 4096, NULL, 2, NULL);
     xTaskCreate(UartTask, "UART Task", 4096, NULL, 1, NULL);
     xTaskCreate(LoRaTask, "LoRa Task", 4096, NULL, 1, NULL);

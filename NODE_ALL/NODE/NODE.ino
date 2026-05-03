@@ -31,6 +31,8 @@ typedef struct __attribute__((packed)) {
 } AckPkt;  // 3 bytes
 
 void sendAck(uint8_t status, uint16_t index) {
+    // Chờ Gateway chuyển sang chế độ RX sau khi TX xong
+    vTaskDelay(pdMS_TO_TICKS(300));
     AckPkt ack = { status, index };
     e32.sendFixedMessage(GW_ADDH, GW_ADDL, LORA_CH, &ack, sizeof(ack));
 }
@@ -68,7 +70,9 @@ bool popChunk(Chunk* out) {
 // ── LoRaRxTask ────────────────────────────────────────────────
 // Priority cao — không được bị block bởi bất cứ thứ gì
 void LoRaRxTask(void* pv) {
+    uint16_t lastReceivedIdx = 0xFFFF; 
     while (true) {
+        //uint16_t lastReceivedIdx = 0xFFFF; 
         // Chờ đủ bytes — tránh đọc giữa chừng khi packet chưa vào hết buffer UART
         if (e32.available() < (int)sizeof(Chunk)) {
             vTaskDelay(pdMS_TO_TICKS(5));
@@ -94,7 +98,12 @@ void LoRaRxTask(void* pv) {
             rsc.close();
             continue;
         }
-
+        if (pkt->index == lastReceivedIdx) {
+            Serial.printf("[RX] DUP  idx=%-4u | re-ACK\n", pkt->index);
+            sendAck(0xAA, pkt->index);   // ACK lại để Gateway biết đã có
+            rsc.close();
+            continue;                    // KHÔNG push vào buffer lần 2
+        }
         // Push vào ring buffer
         if (!pushChunk(pkt)) {
             // Buffer đầy — NACK để Gateway giữ lại chunk này, retry sau
@@ -105,6 +114,7 @@ void LoRaRxTask(void* pv) {
         }
 
         // ACK — Gateway có thể gửi chunk tiếp theo
+        lastReceivedIdx = pkt->index; 
         sendAck(0xAA, pkt->index);
         rsc.close();
     }
@@ -114,9 +124,12 @@ void LoRaRxTask(void* pv) {
 // Priority thấp hơn — log có thể chậm, không ảnh hưởng RX
 void ProcessTask(void* pv) {
     Chunk c;
-    uint16_t lastIndex  = 0xFFFF;   // detect miss
-    uint32_t totalRecv  = 0;
-    uint32_t totalMiss  = 0;
+    bool     firstChunk  = true;
+    uint16_t lastIndex   = 0;
+    uint32_t totalRecv   = 0;
+    uint32_t totalUnique = 0;
+    uint32_t totalDup    = 0;
+    uint32_t totalMiss   = 0;
 
     while (true) {
         xSemaphoreTake(dataReady, portMAX_DELAY);
@@ -124,22 +137,45 @@ void ProcessTask(void* pv) {
 
         totalRecv++;
 
-        // Phát hiện miss — index không liên tục
-        if (lastIndex != 0xFFFF && c.index != lastIndex + 1) {
-            totalMiss += c.index - (lastIndex + 1);
-            Serial.printf("[WARN] MISS: expected idx=%u got idx=%u (miss %u chunks)\n",
-                          lastIndex + 1, c.index,
-                          c.index - (lastIndex + 1));
+        // Duplicate — gateway retry cùng chunk
+        if (!firstChunk && c.index == lastIndex) {
+            totalDup++;
+            Serial.printf("[DUP]  idx=%-5u | gateway gui lai, lan thu %u\n",
+                          c.index, totalDup);
+            continue;
         }
-        lastIndex = c.index;
 
-        // Log chunk
-        Serial.printf("\n[OK] idx=%-4u len=%-2u total_rx=%-5u miss=%-3u\n",
-                      c.index, c.len, totalRecv, totalMiss);
+        // Out-of-order
+        if (!firstChunk && c.index < lastIndex) {
+            Serial.printf("[OOO]  idx=%-5u | sai thu tu, mong cho idx=%u\n",
+                          c.index, lastIndex + 1);
+            continue;
+        }
 
-        // Hex dump — 16 bytes mỗi hàng
+        // Miss — chunk bị mất
+        if (!firstChunk && c.index > (uint16_t)(lastIndex + 1)) {
+            uint16_t missed = c.index - lastIndex - 1;
+            totalMiss += missed;
+            Serial.printf("[MISS] Chunk %u..%u bi mat (%u chunk) | tong mat=%u\n",
+                          lastIndex + 1, c.index - 1, missed, totalMiss);
+        }
+
+        firstChunk = false;
+        lastIndex  = c.index;
+        totalUnique++;
+
+        // Log rõ ràng
+        Serial.println("----------------------------------------");
+        Serial.printf("[OK]  Chunk thu   : %u (tong nhan=%u)\n",
+                      totalUnique, totalRecv);
+        Serial.printf("      So thu tu   : idx=%u\n",   c.index);
+        Serial.printf("      Do dai data : %u bytes\n", c.len);
+        Serial.printf("      Bi mat      : %u chunk\n", totalMiss);
+        Serial.printf("      Trung lap   : %u lan\n",   totalDup);
+        Serial.println("      Data (hex):");
+
         for (uint8_t i = 0; i < c.len; i++) {
-            if (i % 16 == 0) Serial.printf("  %02X: ", i);
+            if (i % 16 == 0) Serial.printf("        %02X: ", i);
             Serial.printf("%02X ", c.data[i]);
             if ((i % 16 == 15) || (i == c.len - 1)) Serial.println();
         }
