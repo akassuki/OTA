@@ -40,27 +40,54 @@ int proto_wait_response(int fd,
 
 
 
-//Linux                          Gateway ESP32
-//  │                                  │
-//   │── "START:281280:5410:4BAA2FE0:CRC32\n"─►│
-//   │                                  │ parse file_size
-//   │                                  │ parse total_chunks
-//   │                                  │ parse crc32
-//   │◄─────────────── "READY\n" ───────│
-//   │                                  │
-//   │── "CHUNK:0:52:CRC_CHUNK0\n" ───────────────►│
-//   │── [52 raw bytes] ───────────────►│ đọc đủ 52 bytes
-//   │◄─────────────── "OK:0\n" ────────│
-//   │                                  │
-//   │── "CHUNK:1:52:CRC_CHUNK1\n" ───────────────►│
-//   │── [52 raw bytes] ───────────────►│
-//   │◄─────────────── "OK:1\n" ────────│
-//   │                                  │
-//   │       ... 5408 chunks tiếp ...   │
-//   │                                  │
-//   │── "CHUNK:5409:32:CRC_CHUNK5409\n" ────────────►│ chunk cuối
-//   │── [32 raw bytes] ───────────────►│ len < 52
-//   │◄─────────────── "OK:5409\n" ─────│
-//   │                                  │
-//   │── "END:CRC_FILE\n" ─────────────►│ verify CRC32
-//   │◄─────────────── "DONE\n" ────────│
+// LINUX                    GATEWAY (ESP32)                    NODE (ESP32)
+//   │                           │                                  │
+//   │──── START:size:chunks ───►│                                  │
+//   │                           │ parse, reply READY               │
+//   │◄─────── READY ────────────│                                  │
+//   │                           │                                  │
+//   │──── CHUNK:0:52:CRC ──────►│                                  │
+//   │──── [52 bytes raw] ───────►│                                  │
+//   │                           │ UartTask nhận, check CRC         │
+//   │                           │ đưa vào pendingChunk             │
+//   │                           │ give(chunkReady)                 │
+//   │                           │ block tại take(chunkDone)        │
+//   │                           │         │                        │
+//   │                           │   LoRaTask take(chunkReady)      │
+//   │                           │   sendFixedMessage ─────────────►│
+//   │                           │                                  │ nhận chunk
+//   │                           │                                  │ xử lý
+//   │                           │◄──────────── ACK:OK:0 ───────────│
+//   │                           │   acked = true                   │
+//   │                           │   chunkResult = true             │
+//   │                           │   give(chunkDone)                │
+//   │                           │         │                        │
+//   │                           │ UartTask unblock                 │
+//   │◄─────── OK:0:CRC ─────────│ reply OK về Linux                │
+//   │                           │                                  │
+//   │──── CHUNK:1:52:CRC ──────►│  (lặp lại cho chunk tiếp)       │
+//   │         ...               │                                  │
+//   │                           │                                  │
+//   │──── END:CRC_FILE ────────►│                                  │
+//   │◄─────── DONE:CRC ─────────│                                  │
+
+
+
+// LINUX                    GATEWAY                            NODE
+//   │                           │                                  │
+//   │──── CHUNK:5:52:CRC ──────►│                                  │
+//   │                           │ give(chunkReady)                 │
+//   │                           │ block(chunkDone)                 │
+//   │                           │                                  │
+//   │                           │ sendFixedMessage ───────────────►│ (mất gói)
+//   │                           │ chờ ACK... timeout 3s            │
+//   │                           │ retry lần 2 ────────────────────►│ (mất gói)
+//   │                           │ retry lần 3 ────────────────────►│ (mất gói)
+//   │                           │ acked = false                    │
+//   │                           │ chunkResult = false              │
+//   │                           │ give(chunkDone)                  │
+//   │                           │                                  │
+//   │◄── ERROR:CHUNK_5_LORA_FAIL│                                  │
+//   │                           │                                  │
+//   │ retry chunk 5             │                                  │
+//   │──── CHUNK:5:52:CRC ──────►│ (bắt đầu lại từ đầu)            │

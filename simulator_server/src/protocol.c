@@ -8,7 +8,7 @@
 #define MAX_RETRY    5
 #define RESP_BUFLEN  64
 
-static int g_paused = 0; 
+// static int g_paused = 0; 
 
 
 
@@ -31,45 +31,48 @@ static int read_response(int fd, char* buf, int buflen, int timeout_ms) {
         log_proto_rx(buf);
         log_terminal("   ◄ RX: %s\n", buf);
 
-        if (strcmp(buf, "WAIT") == 0) {
-            log_terminal("   [FLOW] ESP32 buffer full → pausing\n");
-            g_paused = 1;
-            continue;  // Đọc tiếp, chờ response thực sự
-        }
+        // if (strcmp(buf, "WAIT") == 0) {
+        //     log_terminal("   [FLOW] ESP32 buffer full → pausing\n");
+        //     g_paused = 1;
+        //     continue;  // Đọc tiếp, chờ response thực sự
+        // }
 
-        if (strcmp(buf, "RESUME") == 0) {
-            log_terminal("   [FLOW] ESP32 buffer ready → resuming\n");
-            g_paused = 0;
-            continue;  // Đọc tiếp
-        }
+        // if (strcmp(buf, "RESUME") == 0) {
+        //     log_terminal("   [FLOW] ESP32 buffer ready → resuming\n");
+        //     g_paused = 0;
+        //     continue;  // Đọc tiếp
+        // }
 
         return ret;  // Response thực sự (OK, READY, ERROR,...)
     }
 }
 
-static void wait_if_paused(int fd) {
-    if (!g_paused) return;
+// static void wait_if_paused(int fd) {
+//     if (!g_paused) return;
 
-    log_terminal("   [FLOW] Waiting for RESUME from ESP32...\n");
+//     log_terminal("   [FLOW] Waiting for RESUME from ESP32...\n");
 
-    char buf[RESP_BUFLEN];
-    while (g_paused) {
-        int ret = serial_readline(fd, buf, sizeof(buf), 30000);
-        if (ret < 0) {
-            log_terminal("   [WARN] Timeout waiting for RESUME, retrying...\n");
-            continue;
-        }
+//     char buf[RESP_BUFLEN];
+//     while (g_paused) {
+//         int ret = serial_readline(fd, buf, sizeof(buf), 30000);
+//         if (ret < 0) {
+//             log_terminal("   [WARN] Timeout waiting for RESUME, retrying...\n");
+//             continue;
+//         }
 
-        log_proto_rx(buf);
-        log_terminal("   ◄ RX: %s\n", buf);
+//         log_proto_rx(buf);
+//         log_terminal("   ◄ RX: %s\n", buf);
 
-        if (strcmp(buf, "RESUME") == 0) {
-            log_terminal("   [FLOW] Got RESUME → continuing\n");
-            g_paused = 0;
-        }
-        // WAIT lặp lại → tiếp tục chờ
-    }
-}
+//         if (strcmp(buf, "RESUME") == 0) {
+//             log_terminal("   [FLOW] Got RESUME → continuing\n");
+//             g_paused = 0;
+//         }
+//         // WAIT lặp lại → tiếp tục chờ
+//         else if (strcmp(buf, "WAIT") == 0) {
+//             log_terminal("   [FLOW] Still WAIT → keep waiting\n");
+//         }
+//     }
+// }
 
 /* ======= CHỜ VÀ KIỂM TRA RESPONSE ======= */
 int proto_wait_response(int fd, const char* expected, int timeout_ms) {
@@ -126,7 +129,7 @@ int proto_send_start(int fd,
 
         if (proto_wait_response(fd, "READY", 5000) == 0) {
             log_terminal("   [OK] ESP32 ready\n");
-            g_paused = 0;
+            // g_paused = 0;
             return 0;
         }
 
@@ -138,6 +141,45 @@ int proto_send_start(int fd,
 }
 
 /* ======= SEND CHUNK ======= */
+// int proto_send_chunk(int fd,
+//                      uint16_t       index,
+//                      const uint8_t* data,
+//                      uint8_t        len)
+// {
+//     uint32_t chunk_crc = crc32_chunk(data, len);
+
+//     char expected_ok[32];
+//     snprintf(expected_ok, sizeof(expected_ok), "OK:%u:%08X", index, chunk_crc);
+
+//     char header[48];
+//     snprintf(header, sizeof(header),
+//              "CHUNK:%u:%u:%08X\n", index, len, chunk_crc);
+
+//     char label[32];
+//     snprintf(label, sizeof(label), "CHUNK:%u", index);
+
+//     for (int r = 0; r < MAX_RETRY; r++) {
+//         wait_if_paused(fd);
+//         // serial_flush_input(fd);
+
+//         log_proto_tx(label, data, len);
+//         log_terminal("   ► TX: %s", header);
+
+//         serial_write_str(fd, header);
+//         serial_write(fd, data, len);
+
+//         // Verify: ESP32 phải reply đúng "OK:index:CRC32"
+//         if (proto_wait_response(fd, expected_ok, 10000) == 0)
+//             return 0;
+
+//         log_terminal("   [WARN] Chunk %u retry %d/%d\n",
+//                      index, r + 1, MAX_RETRY);
+//     }
+
+//     log_terminal("[FAIL] Chunk %u failed after %d attempts\n",
+//                  index, MAX_RETRY);
+//     return -1;
+// }
 int proto_send_chunk(int fd,
                      uint16_t       index,
                      const uint8_t* data,
@@ -156,17 +198,14 @@ int proto_send_chunk(int fd,
     snprintf(label, sizeof(label), "CHUNK:%u", index);
 
     for (int r = 0; r < MAX_RETRY; r++) {
-        wait_if_paused(fd);
-        serial_flush_input(fd);
-
         log_proto_tx(label, data, len);
         log_terminal("   ► TX: %s", header);
 
         serial_write_str(fd, header);
         serial_write(fd, data, len);
 
-        // Verify: ESP32 phải reply đúng "OK:index:CRC32"
-        if (proto_wait_response(fd, expected_ok, 10000) == 0)
+        // Chờ OK — timeout dài vì LoRa chậm
+        if (proto_wait_response(fd, expected_ok, 15000) == 0)
             return 0;
 
         log_terminal("   [WARN] Chunk %u retry %d/%d\n",

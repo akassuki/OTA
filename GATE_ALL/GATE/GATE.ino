@@ -2,13 +2,12 @@
 #include <LoRa_E32.h>
 
 #define CHUNK_SIZE 52
-#define RB_SIZE 100
 
 #define NODE_ADDH     0x00
-#define NODE_ADDL     0x01
+#define NODE_ADDL     0x00
 
 #define GW_ADDH       0x00
-#define GW_ADDL       0x00
+#define GW_ADDL       0x01
 
 #define LORA_CH       20
 
@@ -17,18 +16,10 @@
 
 #define LORA_BAUD     9600
 
-#define RB_HIGH_WATERMARK  80   
-#define RB_LOW_WATERMARK   20   
-
 #define ACK_OK   0xAA
 #define ACK_NACK 0xFF
 
-// Shared state giữa LoRaTask và AckRxTask
-volatile uint8_t  lastAckStatus = 0;
-volatile uint16_t lastAckIndex  = 0xFFFF;
-volatile bool     ackReceived   = false;
-SemaphoreHandle_t ackSem;   // tạo trong setup()
-SemaphoreHandle_t e32Mutex; 
+
 
 
 HardwareSerial loraSerial(1);
@@ -53,64 +44,6 @@ typedef struct __attribute__((packed)) {
     uint8_t  data[CHUNK_SIZE];
 } Chunk;
 
-/* ================== RING BUFFER ================== */
-Chunk ring[RB_SIZE];
-
-volatile int head = 0;
-volatile int tail = 0;
-SemaphoreHandle_t rbMutex;
-SemaphoreHandle_t dataReady;
-
-int rbCount() {
-    return (head - tail + RB_SIZE) % RB_SIZE;
-}
-
-
-bool isFull() {
-    return ((head + 1) % RB_SIZE) == tail;
-}
-
-bool isEmpty() {
-    return head == tail;
-}
-
-bool pushChunk(uint16_t idx, uint8_t len, uint8_t* data) {
-    if (xSemaphoreTake(rbMutex, portMAX_DELAY) != pdTRUE) return false;
-    
-    if (isFull()) {
-        xSemaphoreGive(rbMutex);
-        return false;
-    }
-
-    ring[head].index = idx;
-    ring[head].len   = len;
-    memcpy(ring[head].data, data, len);
-    head = (head + 1) % RB_SIZE;
-    int count = rbCount(); 
-
-    xSemaphoreGive(rbMutex);
-    xSemaphoreGive(dataReady);
-    if (count >= RB_HIGH_WATERMARK) {
-        linuxSend("WAIT");
-    }
-    return true;
-}
-
-bool popChunk(Chunk &out) {
-    if (xSemaphoreTake(rbMutex, portMAX_DELAY) != pdTRUE) return false;
-    
-    if (isEmpty()) {
-        xSemaphoreGive(rbMutex);
-        return false;
-    }
-
-    out = ring[tail];
-    memset(&ring[tail], 0, sizeof(Chunk));
-    tail = (tail + 1) % RB_SIZE;
-
-    xSemaphoreGive(rbMutex);
-    return true;
-}
 
 /* ================== UART RESPONSE ================== */
 void linuxSend(const char* msg) {
@@ -158,32 +91,33 @@ void handleStart(String& line) {
     linuxSend("READY");
 }
 
-/* ================== HANDLE CHUNK (PUSH RING BUFFER) ================== */
-void handleChunk(String& header) {
+// Semaphore để UartTask chờ LoRaTask xử lý xong
+SemaphoreHandle_t chunkReady;  // UartTask give, LoRaTask take
+SemaphoreHandle_t chunkDone;   // LoRaTask give, UartTask take
 
+Chunk pendingChunk;  // chunk đang chờ xử lý
+bool  chunkResult;   // true = OK, false = FAIL
+
+void handleChunk(String& header) {
     int p1 = header.indexOf(':');
     int p2 = header.indexOf(':', p1 + 1);
     int p3 = header.indexOf(':', p2 + 1);
 
     uint16_t idx = (uint16_t)header.substring(p1 + 1, p2).toInt();
-    uint8_t len  = (uint8_t)header.substring(p2 + 1, p3).toInt();
-
+    uint8_t  len = (uint8_t)header.substring(p2 + 1, p3).toInt();
     uint32_t crc_expect = (uint32_t)strtoul(
         header.substring(p3 + 1).c_str(), nullptr, 16);
 
     uint8_t buf[CHUNK_SIZE];
     memset(buf, 0, sizeof(buf));
-
     size_t received = 0;
     unsigned long t = millis();
 
     while (received < len && millis() - t < 5000) {
-        if (Serial.available()) {
+        if (Serial.available())
             buf[received++] = (uint8_t)Serial.read();
-        }
-        else {
+        else
             vTaskDelay(1 / portTICK_PERIOD_MS);
-        }
     }
 
     if (received != len) {
@@ -192,17 +126,25 @@ void handleChunk(String& header) {
     }
 
     uint32_t crc_actual = crc32_calc(buf, len);
-
     if (crc_actual != crc_expect) {
         linuxSendf("ERROR:CHUNK_%u_CRC_FAIL", idx);
         return;
     }
 
-    if (pushChunk(idx, len, buf)) {
-        // ✔ FIX Ở ĐÂY
+    // Đưa chunk cho LoRaTask
+    pendingChunk.index = idx;
+    pendingChunk.len   = len;
+    memcpy(pendingChunk.data, buf, len);
+
+    xSemaphoreGive(chunkReady);  // báo LoRaTask có chunk mới
+
+    // Chờ LoRaTask xử lý xong (TX + ACK từ Node)
+    xSemaphoreTake(chunkDone, portMAX_DELAY);
+
+    if (chunkResult) {
         linuxSendf("OK:%u:%08X", idx, crc_actual);
     } else {
-        linuxSendf("ERROR:%u:BUFFER_FULL", idx);
+        linuxSendf("ERROR:CHUNK_%u_LORA_FAIL", idx);
     }
 }
 
@@ -251,142 +193,46 @@ void UartTask(void *pvParameters) {
     }
 }
 
-/* ================== LORA TASK ================== */
-// void LoRaTask(void *pvParameters) {
 
-//     Chunk c;
 
-//     while (1) {
-//         xSemaphoreTake(dataReady, portMAX_DELAY); 
-
-//         if (popChunk(c)) {
-
-//             // =========================
-//             // TẠO PACKET GỬI LORA
-//             // =========================
-
-//             Chunk payload;
-//             memset(&payload, 0, sizeof(Chunk));
-//             payload.index = c.index;
-//             payload.len   = c.len;
-//             memcpy(payload.data, c.data, c.len);
-
-//             // =========================
-//             // GỬI QUA E32 LORA
-//             // =========================
-//             ResponseStatus rs = e32.sendFixedMessage(
-//                 GW_ADDH,
-//                 GW_ADDL,
-//                 LORA_CH,
-//                 &payload,
-//                 sizeof(payload)
-//             );
-
-//             if (rbCount() <= RB_LOW_WATERMARK) {
-//                 linuxSend("RESUME");
-//             }
-
-//             // =========================
-//             // DEBUG (KHÔNG DÙNG SERIAL CHO PROTOCOL)
-//             // =========================
-//             // if (rs.code == SUCCESS) {
-//             //     Serial.print("[LoRa] OK idx=");
-//             //     Serial.println(c.index);
-//             // } else {
-//             //     Serial.print("[LoRa] FAIL idx=");
-//             //     Serial.println(c.index);
-//             // }
-//         }
-
-//         //vTaskDelay(5 / portTICK_PERIOD_MS);
-//         vTaskDelay(10 / portTICK_PERIOD_MS); 
-//     }
-// }
-
-void AckRxTask(void* pv) {
-    while (true) {
-        if (xSemaphoreTake(e32Mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
-            if (e32.available() >= (int)sizeof(AckPkt)) {
-                ResponseStructContainer rsc = e32.receiveMessage(sizeof(AckPkt));
-                if (rsc.status.code == SUCCESS) {
-                    AckPkt* ack = (AckPkt*) rsc.data;
-                    lastAckStatus = ack->status;
-                    lastAckIndex  = ack->index;
-                    ackReceived   = true;
-                    xSemaphoreGive(ackSem);
-                    linuxSendf("DBG:ACK_RECV status=%02X idx=%u", ack->status, ack->index);
-                }
-                rsc.close();
-            }
-            xSemaphoreGive(e32Mutex);
-        }
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
-}
-
-// ── LoRaTask — chỉ gửi, chờ semaphore từ AckRxTask ──────────
 void LoRaTask(void* pvParameters) {
-    Chunk c;
-    const uint32_t ACK_TIMEOUT_MS = 5000;
+    const uint32_t ACK_TIMEOUT_MS = 3000;
     const int      MAX_RETRY      = 3;
 
     while (true) {
-        xSemaphoreTake(dataReady, portMAX_DELAY);
-        if (!popChunk(c)) continue;
+        xSemaphoreTake(chunkReady, portMAX_DELAY);
 
+        Chunk c = pendingChunk;
         bool acked = false;
 
         for (int attempt = 0; attempt < MAX_RETRY && !acked; attempt++) {
-
-            // Xóa ACK cũ trước khi gửi
-            ackReceived = false;
-            xSemaphoreTake(ackSem, 0);   // drain semaphore
-
-            // Gửi chunk
-            ResponseStatus rs;
-            if (xSemaphoreTake(e32Mutex, pdMS_TO_TICKS(3000)) == pdTRUE) {
-                rs = e32.sendFixedMessage(
-                    GW_ADDH, GW_ADDL, LORA_CH, &c, sizeof(c));
-
-                // QUAN TRỌNG: chờ RF truyền xong hoàn toàn trước khi nhả mutex
-                // để AckRxTask không cố nhận trong lúc E32 vẫn đang TX
-
-                xSemaphoreGive(e32Mutex);
-            } else {
-                linuxSendf("WARN:E32_BUSY idx=%u attempt=%d", c.index, attempt);
-                continue;
-            }
+            ResponseStatus rs = e32.sendFixedMessage(
+                NODE_ADDH, NODE_ADDL, LORA_CH, &c, sizeof(c));
 
             if (rs.code != SUCCESS) {
-                linuxSendf("WARN:TX_FAIL idx=%u attempt=%d", c.index, attempt);
                 vTaskDelay(pdMS_TO_TICKS(200));
                 continue;
             }
-            vTaskDelay(pdMS_TO_TICKS(200));
 
-            // Chờ ACK từ AckRxTask qua semaphore
-            if (xSemaphoreTake(ackSem, pdMS_TO_TICKS(ACK_TIMEOUT_MS)) == pdTRUE) {
-                if (lastAckIndex == c.index && lastAckStatus == ACK_OK) {
-                    acked = true;
-                } else if (lastAckStatus == ACK_NACK) {
-                    linuxSendf("WARN:NACK idx=%u attempt=%d", c.index, attempt);
+            uint32_t deadline = millis() + ACK_TIMEOUT_MS;
+            bool gotAck = false;
+
+            while (millis() < deadline && !gotAck) {
+                ResponseStructContainer rsc = e32.receiveMessage(sizeof(AckPkt));
+                if (rsc.status.code == SUCCESS) {
+                    AckPkt* ack = (AckPkt*) rsc.data;
+                    if (ack->index == c.index && ack->status == ACK_OK)
+                        acked = gotAck = true;
+                    else if (ack->status == ACK_NACK)
+                        gotAck = true;
                 }
-            } else {
-                linuxSendf("WARN:ACK_TIMEOUT idx=%u attempt=%d",
-                           c.index, attempt);
+                rsc.close();
+                if (!gotAck) vTaskDelay(pdMS_TO_TICKS(10));
             }
         }
 
-        if (!acked) {
-            linuxSendf("ERROR:CHUNK_%u_FAILED_ALL_RETRY", c.index);
-        }
-
-        // RESUME flow giữ nguyên
-        if (rbCount() <= RB_LOW_WATERMARK) {
-            linuxSend("RESUME");
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(10));
+        chunkResult = acked;
+        xSemaphoreGive(chunkDone);  // báo UartTask xử lý xong
     }
 }
 
@@ -396,8 +242,8 @@ void setup() {
     delay(500);
     Serial.flush();
     linuxSend("BOOT_OK"); 
-    rbMutex = xSemaphoreCreateMutex();
-    dataReady = xSemaphoreCreateCounting(RB_SIZE, 0);
+    // rbMutex = xSemaphoreCreateMutex();
+    // dataReady = xSemaphoreCreateCounting(RB_SIZE, 0);
     loraSerial.begin(LORA_BAUD,SERIAL_8N1,LORA_RX_PIN,LORA_TX_PIN);
     delay(500);
     e32.begin();
@@ -406,8 +252,8 @@ void setup() {
 
         Configuration config = *(Configuration*) csc.data;
 
-        config.ADDH = NODE_ADDH;
-        config.ADDL = NODE_ADDL;
+        config.ADDH = GW_ADDH;
+        config.ADDL = GW_ADDL;
         config.CHAN = LORA_CH;
 
         config.OPTION.fixedTransmission = FT_FIXED_TRANSMISSION;
@@ -416,15 +262,15 @@ void setup() {
     }
 
     csc.close();
+    chunkReady = xSemaphoreCreateBinary();
+    chunkDone  = xSemaphoreCreateBinary();
 
-    ackSem = xSemaphoreCreateBinary();
-    e32Mutex = xSemaphoreCreateMutex();
-    xTaskCreate(AckRxTask, "AckRx", 4096, NULL, 2, NULL);
+    // ackSem = xSemaphoreCreateBinary();
+    // e32Mutex = xSemaphoreCreateMutex();
+    // xTaskCreate(AckRxTask, "AckRx", 4096, NULL, 2, NULL);
     xTaskCreate(UartTask, "UART Task", 4096, NULL, 1, NULL);
     xTaskCreate(LoRaTask, "LoRa Task", 4096, NULL, 1, NULL);
 }
 
 /* ================== LOOP (RỖNG) ================== */
-void loop() {
-    // không dùng trong FreeRTOS architecture
-}
+void loop() {}

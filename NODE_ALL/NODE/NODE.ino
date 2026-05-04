@@ -7,9 +7,9 @@
 #define LORA_BAUD     9600
 
 #define NODE_ADDH     0x00
-#define NODE_ADDL     0x01
+#define NODE_ADDL     0x00
 #define GW_ADDH       0x00
-#define GW_ADDL       0x00
+#define GW_ADDL       0x01
 #define LORA_CH       20
 
 #define CHUNK_SIZE    52   // KHÔNG đổi — khớp với Gateway và Linux
