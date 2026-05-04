@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <LoRa_E32.h>
 
-#define CHUNK_SIZE 52
+#define CHUNK_SIZE 50
 
 #define NODE_ADDH     0x00
 #define NODE_ADDL     0x00
@@ -40,6 +40,7 @@ typedef struct __attribute__((packed)) {
 
 typedef struct __attribute__((packed)) {
     uint16_t index;
+    uint16_t total;
     uint8_t  len;
     uint8_t  data[CHUNK_SIZE];
 } Chunk;
@@ -74,16 +75,21 @@ uint32_t crc32_calc(const uint8_t* data, size_t len) {
 }
 
 /* ================== HANDLE START ================== */
+
+uint16_t gTotalChunks = 0;
+
 void handleStart(String& line) {
     int p1 = line.indexOf(':');
     int p2 = line.indexOf(':', p1 + 1);
     int p3 = line.indexOf(':', p2 + 1);
+
 
     uint32_t fileSize    = (uint32_t)line.substring(p1 + 1, p2).toInt();
     uint16_t totalChunks = (uint16_t)line.substring(p2 + 1, p3).toInt();
     uint32_t crc32       = (uint32_t)strtoul(
                               line.substring(p3 + 1).c_str(), nullptr, 16);
 
+    gTotalChunks = totalChunks;
     (void)fileSize;
     (void)totalChunks;
     (void)crc32;
@@ -133,6 +139,7 @@ void handleChunk(String& header) {
 
     // Đưa chunk cho LoRaTask
     pendingChunk.index = idx;
+    pendingChunk.total = gTotalChunks;
     pendingChunk.len   = len;
     memcpy(pendingChunk.data, buf, len);
 
@@ -230,6 +237,7 @@ void LoRaTask(void* pvParameters) {
                 if (!gotAck) vTaskDelay(pdMS_TO_TICKS(10));
             }
         }
+        if (acked) vTaskDelay(pdMS_TO_TICKS(500));
 
         chunkResult = acked;
         xSemaphoreGive(chunkDone);  // báo UartTask xử lý xong

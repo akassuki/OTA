@@ -1,5 +1,7 @@
 #include <Arduino.h>
 #include "LoRa_E32.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
 
 // ── Config ───────────────────────────────────────────────────
 #define LORA_TX_PIN   34
@@ -12,7 +14,7 @@
 #define GW_ADDL       0x01
 #define LORA_CH       20
 
-#define CHUNK_SIZE    52   // KHÔNG đổi — khớp với Gateway và Linux
+#define CHUNK_SIZE    50   // KHÔNG đổi — khớp với Gateway và Linux
 
 HardwareSerial loraSerial(1);
 LoRa_E32 e32(LORA_TX_PIN, LORA_RX_PIN, &loraSerial, UART_BPS_RATE_9600);
@@ -20,6 +22,7 @@ LoRa_E32 e32(LORA_TX_PIN, LORA_RX_PIN, &loraSerial, UART_BPS_RATE_9600);
 // ── Struct khớp 100% với Gateway ─────────────────────────────
 typedef struct __attribute__((packed)) {
     uint16_t index;
+    uint16_t total;
     uint8_t  len;
     uint8_t  data[CHUNK_SIZE];
 } Chunk;   // 55 bytes — an toàn với E32 (giới hạn 58 bytes payload)
@@ -121,7 +124,6 @@ void LoRaRxTask(void* pv) {
 }
 
 // ── ProcessTask ───────────────────────────────────────────────
-// Priority thấp hơn — log có thể chậm, không ảnh hưởng RX
 void ProcessTask(void* pv) {
     Chunk c;
     bool     firstChunk  = true;
@@ -131,44 +133,81 @@ void ProcessTask(void* pv) {
     uint32_t totalDup    = 0;
     uint32_t totalMiss   = 0;
 
+    // ── OTA state — khai báo ở đây để dùng được toàn hàm ────
+    esp_ota_handle_t       otaHandle  = 0;
+    const esp_partition_t* otaPart    = NULL;
+    bool                   otaStarted = false;
+
     while (true) {
         xSemaphoreTake(dataReady, portMAX_DELAY);
         if (!popChunk(&c)) continue;
 
         totalRecv++;
 
-        // Duplicate — gateway retry cùng chunk
         if (!firstChunk && c.index == lastIndex) {
             totalDup++;
-            Serial.printf("[DUP]  idx=%-5u | gateway gui lai, lan thu %u\n",
-                          c.index, totalDup);
+            Serial.printf("[DUP]  idx=%-5u\n", c.index);
             continue;
         }
 
-        // Out-of-order
         if (!firstChunk && c.index < lastIndex) {
-            Serial.printf("[OOO]  idx=%-5u | sai thu tu, mong cho idx=%u\n",
-                          c.index, lastIndex + 1);
+            Serial.printf("[OOO]  idx=%-5u\n", c.index);
             continue;
         }
 
-        // Miss — chunk bị mất
         if (!firstChunk && c.index > (uint16_t)(lastIndex + 1)) {
             uint16_t missed = c.index - lastIndex - 1;
             totalMiss += missed;
-            Serial.printf("[MISS] Chunk %u..%u bi mat (%u chunk) | tong mat=%u\n",
-                          lastIndex + 1, c.index - 1, missed, totalMiss);
+            Serial.printf("[MISS] Chunk %u..%u bi mat\n",
+                          lastIndex + 1, c.index - 1);
+        }
+
+        // ── Bắt đầu OTA ở chunk đầu tiên ────────────────────
+        if (firstChunk) {
+            otaPart = esp_ota_get_next_update_partition(NULL);
+            if (!otaPart) {
+                Serial.println("[OTA] ERROR: Khong tim thay OTA partition");
+                continue;
+            }
+
+            esp_err_t err = esp_ota_begin(otaPart,
+                                          OTA_WITH_SEQUENTIAL_WRITES,
+                                          &otaHandle);
+            if (err != ESP_OK) {
+                Serial.printf("[OTA] ERROR: ota_begin: %s\n",
+                              esp_err_to_name(err));
+                continue;
+            }
+
+            Serial.printf("[OTA] Bat dau ghi | total=%u chunks\n", c.total);
+            otaStarted = true;
         }
 
         firstChunk = false;
         lastIndex  = c.index;
         totalUnique++;
 
-        // Log rõ ràng
+        // ── Ghi chunk vào flash ───────────────────────────────
+        if (otaStarted) {
+            esp_err_t err = esp_ota_write(otaHandle, c.data, c.len);
+            if (err != ESP_OK) {
+                Serial.printf("[OTA] ERROR: ota_write idx=%u: %s\n",
+                              c.index, esp_err_to_name(err));
+                esp_ota_abort(otaHandle);
+                otaStarted  = false;
+                firstChunk  = true;
+                lastIndex   = 0;
+                totalUnique = 0;
+                continue;
+            }
+        }
+
+        // ── Log ───────────────────────────────────────────────
         Serial.println("----------------------------------------");
         Serial.printf("[OK]  Chunk thu   : %u (tong nhan=%u)\n",
                       totalUnique, totalRecv);
-        Serial.printf("      So thu tu   : idx=%u\n",   c.index);
+        Serial.printf("      So thu tu   : idx=%u / total=%u\n",
+                      c.index, c.total);
         Serial.printf("      Do dai data : %u bytes\n", c.len);
         Serial.printf("      Bi mat      : %u chunk\n", totalMiss);
         Serial.printf("      Trung lap   : %u lan\n",   totalDup);
@@ -180,6 +219,35 @@ void ProcessTask(void* pv) {
             if ((i % 16 == 15) || (i == c.len - 1)) Serial.println();
         }
         Serial.flush();
+
+        // ── Chunk cuối → hoàn tất OTA ────────────────────────
+        if (c.index == c.total - 1) {
+            Serial.println("[OTA] Nhan du chunks, dang hoan tat...");
+
+            esp_err_t err = esp_ota_end(otaHandle);
+            if (err != ESP_OK) {
+                Serial.printf("[OTA] ERROR: ota_end: %s\n",
+                              esp_err_to_name(err));
+                otaStarted = false;
+                firstChunk = true;
+                lastIndex  = 0;
+                continue;
+            }
+
+            err = esp_ota_set_boot_partition(otaPart);
+            if (err != ESP_OK) {
+                Serial.printf("[OTA] ERROR: set_boot_partition: %s\n",
+                              esp_err_to_name(err));
+                otaStarted = false;
+                firstChunk = true;
+                lastIndex  = 0;
+                continue;
+            }
+
+            Serial.println("[OTA] THANH CONG! Reboot sau 3 giay...");
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            esp_restart();
+        }
     }
 }
 
