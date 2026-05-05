@@ -6,7 +6,7 @@ LDLIBS  = -lpthread
 SRC_DIR   = src
 BUILD_DIR = build
 LOG_DIR   = log
-LOG_FILE  = $(LOG_DIR)/terminal.log  $(LOG_DIR)/protocol.log
+LOG_FILE  = $(LOG_DIR)/terminal.log  $(LOG_DIR)/lora_e32.log
 
 TARGET  = $(BUILD_DIR)/sender
 SOURCES = $(wildcard $(SRC_DIR)/*.c)
@@ -38,7 +38,7 @@ rebuild: clean all
 
 help:
 	@echo "  RUN           - ./build/sender --port /dev/? --file firm_test/? --baud ?"
-	@echo " RUN (default) - ./build/sender (default port, file, baud from config/config.h)"
+	@echo "  RUN_DEFAULT   - ./build/sender (uses default port and file)"
 	@echo "  make          - Build and run the sender"
 	@echo "  make clean    - Remove build artifacts"
 	@echo "  make rebuild  - Clean and rebuild the sender"

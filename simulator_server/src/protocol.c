@@ -5,7 +5,6 @@
 #include <string.h>
 #include <stdint.h>
 
-#define MAX_RETRY    5
 #define RESP_BUFLEN  64
 
 // static int g_paused = 0; 

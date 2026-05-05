@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "config.h"
 
-#define CHUNK_SIZE 50
 
 /* ======= CRC32 ======= */
 static inline uint32_t crc32_chunk(const uint8_t* data, size_t len) {

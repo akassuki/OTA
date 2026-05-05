@@ -5,11 +5,10 @@
 #include <time.h>
 #include <unistd.h>
 #include <logger.h>
+#include "protocol.h"
 #include "file.h"
 #include "serial.h"
-#include "protocol.h"
 
-#define DEFAULT_BAUD  115200
 
 static void print_usage(const char* prog) {
     fprintf(stderr,
@@ -58,8 +57,8 @@ static void print_progress(uint16_t done, uint16_t total,
 
 int main(int argc, char* argv[]) {
     logger_init();
-    const char* port     = NULL;
-    const char* filepath = NULL;
+    const char* port     = PORT_DEFAULT;
+    const char* filepath = FILE_DEFAULT;
     int         baud     = DEFAULT_BAUD;
 
     // ── Parse arguments ──
