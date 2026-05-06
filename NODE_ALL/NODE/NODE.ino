@@ -238,7 +238,7 @@ bool applyDeltaOTA(size_t patchSize) {
 
     // ── ProcessTask ───────────────────────────────────────────────
     void ProcessTask(void* pv) {
-        Serial.println("fasfasdfads");
+        //Serial.println("fasfasdfads");
         LoraChunk c;
         bool     firstChunk  = true;
         uint16_t lastIndex   = 0;
