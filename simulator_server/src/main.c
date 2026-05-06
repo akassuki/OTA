@@ -41,6 +41,16 @@ static void print_progress(uint16_t done, uint16_t total,
     int    filled = (int)(pct / 2.0f);
     double speed  = elapsed > 0 ? bytes_sent / elapsed : 0;
 
+    printf("\r  [");
+    for (int i = 0; i < 50; i++) {
+        if      (i < filled - 1) printf("=");
+        else if (i == filled - 1) printf(">");
+        else                      printf(".");
+    }
+    printf("] %5.1f%% | %u/%u chunks | %.0f B/s   ",
+           pct, done, total, speed);
+    fflush(stdout);
+
     log_terminal("\r  [");
     for (int i = 0; i < 50; i++) {
         if (i < filled - 1)
@@ -181,6 +191,8 @@ int main(int argc, char* argv[]) {
 
         print_progress(i + 1, total_chunks, offset + len, elapsed);
     }
+
+    printf("\n");
 
     log_terminal("\n");  // newline sau progress bar
 
