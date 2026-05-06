@@ -9,11 +9,15 @@
 
 #define CHUNK_DATA_SIZE  50  // CHUNK_SIZE 
 #define MAX_RETRY        5
-#define ACK_TIMEOUT_MS   5000
-
 #define PORT_DEFAULT     "/dev/ttyUSB0"
 #define FILE_DEFAULT     "firm_test/firmware.bin"
 #define E32_BAUD         9600    // baud
+
+
+
+#define ACK_TIMEOUT_MS   3000    // 
+#define ACK_OK           0xAA   // 
+#define ACK_NACK         0xFF   // 
 
 
 #endif // CONFIG_H

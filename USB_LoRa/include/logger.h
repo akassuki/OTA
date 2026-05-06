@@ -16,7 +16,7 @@ void log_terminal(const char* fmt, ...);
 // Ghi vào protocol.log (bản tin giao tiếp)
 void log_protocol(const char* direction, const char* msg);
 
-void log_proto_tx(const char* label,const uint8_t* data, int data_len);
+void log_proto_tx(const char* label,const uint8_t* data, int data_len,uint16_t index);
 
 void log_proto_rx(const char* msg);
 

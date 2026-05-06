@@ -81,7 +81,7 @@ int lora_send_chunk(int fd, uint16_t index, uint16_t total,
 
     log_terminal("[LORA] TX chunk idx=%u/%u len=%u\n",
                  index, total - 1, len);
-    log_proto_tx("CHUNK_TX", buf, sizeof(buf));
+    log_proto_tx("CHUNK_TX", buf, sizeof(buf),index);
 
     if (lora_write_bytes(fd, buf, sizeof(buf)) < 0) {
         log_terminal("[LORA] Write error\n");
@@ -93,8 +93,8 @@ int lora_send_chunk(int fd, uint16_t index, uint16_t total,
 // ── Chờ ACK từ Node ───────────────────────────────────────────
 // Node gửi về AckPkt (3 bytes): [status][index_lo][index_hi]
 int lora_wait_ack(int fd, uint16_t expected_index, int timeout_ms) {
-    AckPkt ack;
-    int ret = lora_read_bytes(fd, (uint8_t*)&ack, sizeof(AckPkt), timeout_ms);
+    uint8_t raw[sizeof(AckPkt)];  // 3 bytes, không phải 6
+    int ret = lora_read_bytes(fd, raw, sizeof(raw), timeout_ms);
 
     if (ret == -2) {
         log_terminal("[LORA] ACK timeout (expected idx=%u)\n", expected_index);
@@ -105,15 +105,13 @@ int lora_wait_ack(int fd, uint16_t expected_index, int timeout_ms) {
         return -1;
     }
 
-    log_terminal("[LORA] RX ACK status=0x%02X idx=%u (expected=%u)\n",
-                 ack.status, ack.index, expected_index);
-    log_proto_tx("ACK_RX", (uint8_t*)&ack, sizeof(AckPkt));
+    log_terminal("[LORA] RAW ACK: %02X %02X %02X\n", raw[0], raw[1], raw[2]);
 
-    if (ack.index != expected_index) {
-        log_terminal("[LORA] ACK index mismatch: got %u expected %u\n",
-                     ack.index, expected_index);
-        return -1;
-    }
+    AckPkt* ack = (AckPkt*)raw;
+    if (ack->status == ACK_OK && ack->index == expected_index)
+        return 0xAA;
+    if (ack->status == ACK_NACK)
+        return 0xFF;
 
-    return ack.status;
+    return -1;
 }

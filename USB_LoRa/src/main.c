@@ -107,7 +107,7 @@ int main(int argc, char* argv[]) {
             }
 
             // Chờ E32 chuyển sang RX + Node xử lý + gửi ACK
-            usleep(300000);  // 300ms — khớp với Node ESP32
+            usleep(800000);  // 300ms — khớp với Node ESP32
 
             int ack = lora_wait_ack(fd, i, ACK_TIMEOUT_MS);
 

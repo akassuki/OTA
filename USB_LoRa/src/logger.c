@@ -33,28 +33,22 @@ void log_terminal(const char* fmt, ...) {
     }
 }
 
-void log_proto_tx(const char* label, const uint8_t* data, int len) {
+void log_proto_tx(const char* label, const uint8_t* data, int len, uint16_t index) {
     if (!g_lora_log || g_lora_log == stderr) return;
 
-    // Timestamp
     time_t now = time(NULL);
     struct tm* t = localtime(&now);
-    fprintf(g_lora_log, "\n[%02d:%02d:%02d] [%s] %d bytes\n",
-            t->tm_hour, t->tm_min, t->tm_sec, label, len);
+    fprintf(g_lora_log, "\n[%02d:%02d:%02d] [%s] %d bytes | chunk=%u\n",
+            t->tm_hour, t->tm_min, t->tm_sec, label, len, index);
 
-    // Hex + ASCII dump
     for (int i = 0; i < len; i++) {
         if (i % 16 == 0)
             fprintf(g_lora_log, "  %04X: ", i);
-
         fprintf(g_lora_log, "%02X ", data[i]);
-
         if ((i % 16 == 15) || (i == len - 1)) {
-            // Padding hàng cuối
             int pad = 15 - (i % 16);
             for (int p = 0; p < pad; p++)
                 fprintf(g_lora_log, "   ");
-
             fprintf(g_lora_log, " | ");
             int row_start = i - (i % 16);
             for (int j = row_start; j <= i; j++) {
